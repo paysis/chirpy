@@ -8,6 +8,8 @@ import (
 func main() {
 	smux := http.NewServeMux()
 
+	smux.Handle("/", http.FileServer(http.Dir(".")))
+
 	server := &http.Server{}
 	server.Handler = smux
 	server.Addr = ":8080"
