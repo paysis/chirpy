@@ -1,21 +1,21 @@
 package main
 
 import (
-	"fmt"
+	"log"
 	"net/http"
 )
 
 func main() {
+	const port = "8080"
 	smux := http.NewServeMux()
 
 	smux.Handle("/", http.FileServer(http.Dir(".")))
 
-	server := &http.Server{}
-	server.Handler = smux
-	server.Addr = ":8080"
-
-	err := server.ListenAndServe()
-	if err != nil {
-		fmt.Printf("Server exits with error: %v", err)
+	server := &http.Server{
+		Handler: smux,
+		Addr:    ":" + port,
 	}
+
+	log.Printf("Running on port: %s\n", port)
+	log.Fatal(server.ListenAndServe())
 }
