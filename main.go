@@ -9,7 +9,13 @@ func main() {
 	const port = "8080"
 	smux := http.NewServeMux()
 
-	smux.Handle("/", http.FileServer(http.Dir(".")))
+	smux.Handle("/app/", http.StripPrefix("/app/", http.FileServer(http.Dir("."))))
+
+	smux.HandleFunc("/healthz", func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Add("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(200)
+		w.Write([]byte("OK"))
+	})
 
 	server := &http.Server{
 		Handler: smux,
