@@ -2,15 +2,23 @@ package main
 
 import (
 	"bufio"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
+	"github.com/paysis/chirpy/internal/database"
 )
 
 func main() {
+	godotenv.Load()
+
 	const port = "8080"
 	smux := http.NewServeMux()
 
@@ -43,11 +51,20 @@ func main() {
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	db             *database.Queries
 }
 
 func NewApiConfig(hitVal int32) *apiConfig {
+	// db init
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Panicln("Could not open sql connection, panic")
+	}
+
 	cfg := &apiConfig{
 		fileserverHits: atomic.Int32{},
+		db:             database.New(db),
 	}
 	cfg.fileserverHits.Store(hitVal)
 	return cfg
