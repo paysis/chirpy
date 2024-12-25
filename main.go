@@ -10,7 +10,9 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/paysis/chirpy/internal/database"
@@ -32,6 +34,8 @@ func main() {
 	smux.HandleFunc("GET /admin/metrics", apiCfg.HandleMetrics)
 	smux.HandleFunc("POST /admin/reset", apiCfg.HandleReset)
 
+	smux.HandleFunc("POST /api/users", apiCfg.HandleCreateUser)
+
 	smux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Add("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(200)
@@ -52,6 +56,7 @@ func main() {
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
+	platform       string
 }
 
 func NewApiConfig(hitVal int32) *apiConfig {
@@ -65,6 +70,7 @@ func NewApiConfig(hitVal int32) *apiConfig {
 	cfg := &apiConfig{
 		fileserverHits: atomic.Int32{},
 		db:             database.New(db),
+		platform:       os.Getenv("PLATFORM"),
 	}
 	cfg.fileserverHits.Store(hitVal)
 	return cfg
@@ -97,10 +103,56 @@ func (cfg *apiConfig) HandleMetrics(w http.ResponseWriter, req *http.Request) {
 }
 
 func (cfg *apiConfig) HandleReset(w http.ResponseWriter, req *http.Request) {
-	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
+	if cfg.platform != "dev" {
+		w.WriteHeader(403)
+		return
+	}
+
 	cfg.fileserverHits.Store(0)
 	log.Printf("reset the hits to %v", cfg.fileserverHits.Load())
+	err := cfg.db.DeleteAllUsers(req.Context())
+	if err != nil {
+		log.Printf("Could not delete all users: %v\n", err)
+	}
+
+	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(200)
+}
+
+func (cfg *apiConfig) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Email string `json:"email"`
+	}
+
+	type returnVal struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+
+	params := parameters{}
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 500, "Something went wrong")
+		return
+	}
+
+	user, err := cfg.db.CreateUser(r.Context(), params.Email)
+	if err != nil {
+		respondWithError(w, 500, "Something went wrong")
+		return
+	}
+
+	retVal := returnVal{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+
+	respondWithJSON(w, 201, retVal)
 }
 
 func HandleValidateChirpy(w http.ResponseWriter, r *http.Request) {
