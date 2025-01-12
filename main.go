@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/paysis/chirpy/internal/auth"
 	"github.com/paysis/chirpy/internal/database"
 )
 
@@ -35,14 +36,16 @@ func main() {
 	smux.HandleFunc("POST /admin/reset", apiCfg.HandleReset)
 
 	smux.HandleFunc("POST /api/users", apiCfg.HandleCreateUser)
+	smux.HandleFunc("POST /api/login", apiCfg.HandleLogin)
+	smux.HandleFunc("POST /api/chirps", apiCfg.HandleCreateChirp)
+	smux.HandleFunc("GET /api/chirps", apiCfg.HandleGetAllChirps)
+	smux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.HandleGetChirp)
 
 	smux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Add("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(200)
 		w.Write([]byte("OK"))
 	})
-
-	smux.HandleFunc("POST /api/validate_chirp", HandleValidateChirpy)
 
 	server := &http.Server{
 		Handler: smux,
@@ -119,9 +122,56 @@ func (cfg *apiConfig) HandleReset(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(200)
 }
 
+func (cfg *apiConfig) HandleLogin(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	type returnVal struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+
+	params := parameters{}
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&params)
+
+	if err != nil {
+		respondWithError(w, 500, "Something went wrong")
+		return
+	}
+
+	dbUser, err := cfg.db.GetUserByEmail(r.Context(), params.Email)
+
+	if err != nil {
+		respondWithError(w, 500, "Something went wrong with db")
+		return
+	}
+
+	err = auth.CheckPasswordHash(params.Password, dbUser.HashedPassword)
+
+	if err != nil {
+		respondWithError(w, 401, "Incorrect email or password")
+		return
+	}
+
+	retVal := returnVal{
+		ID:        dbUser.ID,
+		CreatedAt: dbUser.CreatedAt,
+		UpdatedAt: dbUser.UpdatedAt,
+		Email:     dbUser.Email,
+	}
+
+	respondWithJSON(w, 200, retVal)
+}
+
 func (cfg *apiConfig) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 
 	type returnVal struct {
@@ -139,7 +189,19 @@ func (cfg *apiConfig) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := cfg.db.CreateUser(r.Context(), params.Email)
+	hashedPassword, err := auth.HashPassword(params.Password)
+
+	if err != nil {
+		respondWithError(w, 400, "Could not hash the password")
+		return
+	}
+
+	dbUser := database.CreateUserParams{
+		Email:          params.Email,
+		HashedPassword: hashedPassword,
+	}
+
+	user, err := cfg.db.CreateUser(r.Context(), dbUser)
 	if err != nil {
 		respondWithError(w, 500, "Something went wrong")
 		return
@@ -155,13 +217,83 @@ func (cfg *apiConfig) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, 201, retVal)
 }
 
-func HandleValidateChirpy(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) HandleGetChirp(w http.ResponseWriter, r *http.Request) {
+	type returnVal struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
+
+	chirpID, err := uuid.Parse(r.PathValue("chirpID"))
+
+	if err != nil {
+		log.Printf("uuid Parse returned err: %v\n", err)
+		respondWithError(w, 400, "Please make sure the chirp ID is of type UUID")
+		return
+	}
+
+	chirp, err := cfg.db.GetChirp(r.Context(), chirpID)
+
+	if err != nil {
+		respondWithError(w, 500, err.Error())
+		return
+	}
+
+	retVal := returnVal{
+		ID:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserID:    chirp.UserID,
+	}
+
+	respondWithJSON(w, 200, retVal)
+}
+
+func (cfg *apiConfig) HandleGetAllChirps(w http.ResponseWriter, r *http.Request) {
+	type returnVal struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
+
+	chirps, err := cfg.db.GetAllChirps(r.Context())
+
+	if err != nil {
+		respondWithError(w, 500, err.Error())
+		return
+	}
+
+	retVals := make([]returnVal, 0, len(chirps))
+	for _, chirp := range chirps {
+		retVals = append(retVals, returnVal{
+			ID:        chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+			UserID:    chirp.UserID,
+		})
+	}
+
+	respondWithJSON(w, 200, retVals)
+}
+
+func (cfg *apiConfig) HandleCreateChirp(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Body string `json:"body"`
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
 	}
 
 	type returnVal struct {
-		CleanedBody string `json:"cleaned_body"`
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
 	}
 
 	params := parameters{}
@@ -173,7 +305,6 @@ func HandleValidateChirpy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// length validation
 	if len(params.Body) > 140 {
 		respondWithError(w, 400, "Chirp is too long")
 		return
@@ -186,13 +317,25 @@ func HandleValidateChirpy(w http.ResponseWriter, r *http.Request) {
 		"fornax",
 	}
 
-	cleanBody := filterProfaneWords(params.Body, profaneList)
+	params.Body = filterProfaneWords(params.Body, profaneList)
 
-	retVal := returnVal{
-		CleanedBody: cleanBody,
+	chirp, err := cfg.db.CreateChirp(r.Context(), database.CreateChirpParams{
+		Body:   params.Body,
+		UserID: params.UserID,
+	})
+
+	if err != nil {
+		respondWithError(w, 500, err.Error())
+		return
 	}
 
-	respondWithJSON(w, 200, retVal)
+	respondWithJSON(w, 201, returnVal{
+		ID:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserID:    chirp.UserID,
+	})
 }
 
 func filterProfaneWords(src string, profaneList []string) string {
