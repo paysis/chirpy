@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -530,11 +531,43 @@ func (cfg *apiConfig) HandleGetAllChirps(w http.ResponseWriter, r *http.Request)
 		UserID    uuid.UUID `json:"user_id"`
 	}
 
-	chirps, err := cfg.db.GetAllChirps(r.Context())
+	authorId := r.URL.Query().Get("author_id")
+	authorUUID, err := uuid.Parse(authorId)
+
+	sortArg := r.URL.Query().Get("sort")
+	sortByAsc := true
+
+	if sortArg == "desc" {
+		sortByAsc = false
+	}
+
+	if err != nil {
+		authorId = ""
+	}
+
+	var chirps []database.Chirp
+
+	if authorId == "" {
+		chirps, err = cfg.db.GetAllChirps(r.Context())
+	} else {
+		chirps, err = cfg.db.GetChirpsByUserId(r.Context(), authorUUID)
+	}
 
 	if err != nil {
 		respondWithError(w, 500, err.Error())
 		return
+	}
+
+	if !sortByAsc {
+		slices.SortFunc(chirps, func(a database.Chirp, b database.Chirp) int {
+			if a.CreatedAt.After(b.CreatedAt) {
+				return -1
+			} else if a.CreatedAt.Before(b.CreatedAt) {
+				return 1
+			} else {
+				return 0
+			}
+		})
 	}
 
 	retVals := make([]returnVal, 0, len(chirps))
